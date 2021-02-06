@@ -46,6 +46,7 @@ func run(ctx context.Context, token string) error {
 
 	opt := &github.RepositoryListOptions{
 		Sort:        "pushed",
+		Direction:   "asc",
 		Visibility:  "public",
 		Affiliation: "owner",
 		ListOptions: github.ListOptions{PerPage: 10},

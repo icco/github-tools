@@ -6,102 +6,89 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 
-	"github.com/shurcooL/githubv4"
+	"github.com/google/go-github/v33/github"
+	"github.com/manifoldco/promptui"
 	"golang.org/x/oauth2"
 )
 
 func main() {
 	flag.Parse()
 
-	if err := run(context.Background()); err != nil {
+	token := os.Getenv("GITHUB_TOKEN")
+
+	if err := run(context.Background(), token); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context) error {
-	src := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: os.Getenv("GITHUB_TOKEN")},
-	)
-	httpClient := oauth2.NewClient(ctx, src)
-	client := githubv4.NewClient(httpClient)
+func StrToBool(input string) (bool, error) {
+	pieces := strings.Split(strings.TrimSpace(strings.ToLower(input)), "")
+	if len(pieces) == 0 {
+		return false, fmt.Errorf("empty string not allowed")
+	}
 
-	// Toggle a 👍 reaction on an issue.
-	//
-	// That involves first doing a query (and determining whether the reaction already exists),
-	// then either adding or removing it.
-	{
-		var q struct {
-			Repository struct {
-				Issue struct {
-					ID        githubv4.ID
-					Reactions struct {
-						ViewerHasReacted githubv4.Boolean
-					} `graphql:"reactions(content:$reactionContent)"`
-				} `graphql:"issue(number:$issueNumber)"`
-			} `graphql:"repository(owner:$repositoryOwner,name:$repositoryName)"`
-		}
-		variables := map[string]interface{}{
-			"repositoryOwner": githubv4.String("shurcooL-test"),
-			"repositoryName":  githubv4.String("test-repo"),
-			"issueNumber":     githubv4.Int(2),
-			"reactionContent": githubv4.ReactionContentThumbsUp,
-		}
-		err := client.Query(context.Background(), &q, variables)
+	if pieces[0] != "y" && pieces[0] != "n" {
+		return false, fmt.Errorf("answer must be yes or no")
+	}
+
+	return pieces[0] == "y", nil
+}
+
+func run(ctx context.Context, token string) error {
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: token},
+	)
+	tc := oauth2.NewClient(ctx, ts)
+
+	client := github.NewClient(tc)
+
+	opt := &github.RepositoryListOptions{
+		Sort:        "pushed",
+		Visibility:  "public",
+		Affiliation: "owner",
+		ListOptions: github.ListOptions{PerPage: 10},
+	}
+
+	prompt := promptui.Prompt{
+		Label: "Archive",
+		Validate: func(input string) error {
+			_, err := StrToBool(input)
+			return err
+		},
+	}
+
+	for {
+		repos, resp, err := client.Repositories.List(ctx, "", opt)
 		if err != nil {
 			return err
 		}
-		fmt.Println("already reacted:", q.Repository.Issue.Reactions.ViewerHasReacted)
 
-		if !q.Repository.Issue.Reactions.ViewerHasReacted {
-			// Add reaction.
-			var m struct {
-				AddReaction struct {
-					Subject struct {
-						ReactionGroups []struct {
-							Content githubv4.ReactionContent
-							Users   struct {
-								TotalCount githubv4.Int
-							}
-						}
-					}
-				} `graphql:"addReaction(input:$input)"`
+		for _, r := range repos {
+			if !r.GetFork() && !r.GetArchived() {
+				fmt.Printf("%s\n\tFork: %v\n\tArchived: %v\n\tPushedAt: %v\n", r.GetFullName(), r.GetFork(), r.GetArchived(), r.GetPushedAt())
+
+				result, err := prompt.Run()
+				if err != nil {
+					return err
+				}
+
+				archive, err := StrToBool(result)
+				if err != nil {
+					return err
+				}
+
+				if archive {
+					log.Printf("will archive")
+				}
 			}
-			input := githubv4.AddReactionInput{
-				SubjectID: q.Repository.Issue.ID,
-				Content:   githubv4.ReactionContentThumbsUp,
-			}
-			err := client.Mutate(context.Background(), &m, input, nil)
-			if err != nil {
-				return err
-			}
-			printJSON(m)
-			fmt.Println("Successfully added reaction.")
-		} else {
-			// Remove reaction.
-			var m struct {
-				RemoveReaction struct {
-					Subject struct {
-						ReactionGroups []struct {
-							Content githubv4.ReactionContent
-							Users   struct {
-								TotalCount githubv4.Int
-							}
-						}
-					}
-				} `graphql:"removeReaction(input:$input)"`
-			}
-			input := githubv4.RemoveReactionInput{
-				SubjectID: q.Repository.Issue.ID,
-				Content:   githubv4.ReactionContentThumbsUp,
-			}
-			err := client.Mutate(context.Background(), &m, input, nil)
-			if err != nil {
-				return err
-			}
-			printJSON(m)
-			fmt.Println("Successfully removed reaction.")
 		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
 	}
 
 	return nil

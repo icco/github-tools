@@ -1,4 +1,4 @@
-module github.com/icco/github-tools
+module go.icco.me/github-tools
 
 go 1.25.0
 
